@@ -1,0 +1,10 @@
+[package]
+name = "raftfs"
+version = "0.1.0"
+authors = ["David Roundy <daveroundy@gmail.com>", "William R. Fraser <wfraser@codewise.org>"]
+
+[dependencies]
+libc = "0.2"
+log = "0.3"
+time = "0.1"
+fuse_mt = "0.4.3"

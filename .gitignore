@@ -1,2 +1,4 @@
 data
 *~
+Cargo.lock
+target
