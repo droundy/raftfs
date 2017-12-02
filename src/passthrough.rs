@@ -1,4 +1,4 @@
-// PassthroughFS :: A filesystem that passes all calls through to another underlying filesystem.
+// RaftFS :: A fancy filesystem that manages synchronized mirrors.
 //
 // Implemented using fuse_mt::FilesystemMT.
 //
@@ -18,7 +18,7 @@ use super::libc_wrappers;
 use fuse_mt::*;
 use time::*;
 
-pub struct PassthroughFS {
+pub struct RaftFS {
     pub target: OsString,
 }
 
@@ -85,7 +85,7 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
     }
 }
 
-impl PassthroughFS {
+impl RaftFS {
     fn real_path(&self, partial: &Path) -> OsString {
         PathBuf::from(&self.target)
                 .join(partial.strip_prefix("/").unwrap())
@@ -111,7 +111,7 @@ impl PassthroughFS {
 
 const TTL: Timespec = Timespec { sec: 1, nsec: 0 };
 
-impl FilesystemMT for PassthroughFS {
+impl FilesystemMT for RaftFS {
     fn init(&self, _req: RequestInfo) -> ResultEmpty {
         debug!("init");
         Ok(())

@@ -44,7 +44,7 @@ fn main() {
         ::std::process::exit(-1);
     }
 
-    let filesystem = passthrough::PassthroughFS {
+    let filesystem = passthrough::RaftFS {
         target: args[1].clone(),
     };
 
