@@ -83,3 +83,35 @@ fn file_write_read() {
                    std::str::from_utf8(contents));
     }
 }
+
+#[test]
+fn file_rename() {
+    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
+    let contents = b"hello\n";
+    {
+        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+        f.write(contents).unwrap();
+    }
+    assert!(std::fs::File::open(t.path("mnt/testfile")).is_ok());
+    assert!(std::fs::File::open(t.path("mnt/newname")).is_err());
+    std::fs::rename(t.path("mnt/testfile"), t.path("mnt/newname")).unwrap();
+    assert!(std::fs::File::open(t.path("mnt/testfile")).is_err());
+    assert!(std::fs::File::open(t.path("data/testfile")).is_err());
+    assert!(std::fs::File::open(t.path("mnt/newname")).is_ok());
+    assert!(std::fs::File::open(t.path("data/newname")).is_ok());
+    {
+        let mut f = std::fs::File::open(t.path("mnt/newname")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+    {
+        println!("verify that the file actually got stored in data");
+        let mut f = std::fs::File::open(t.path("data/newname")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+}
