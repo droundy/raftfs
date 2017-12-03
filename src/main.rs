@@ -16,7 +16,7 @@ extern crate fuse_mt;
 
 mod libc_extras;
 mod libc_wrappers;
-mod passthrough;
+mod raftfs;
 
 struct ConsoleLogger;
 
@@ -44,7 +44,7 @@ fn main() {
         ::std::process::exit(-1);
     }
 
-    let filesystem = passthrough::RaftFS {
+    let filesystem = raftfs::RaftFS {
         target: args[1].clone(),
     };
 
