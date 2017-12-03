@@ -20,6 +20,7 @@ impl TempDir {
         if !s.is_ok() {
             println!("Bad news: {:?}", s);
         }
+        std::thread::sleep(std::time::Duration::from_secs(1));
         TempDir(std::path::PathBuf::from(&p), s.unwrap())
     }
     fn path(&self, p: &str) -> std::path::PathBuf {
@@ -44,16 +45,41 @@ fn location_of_executables() -> std::path::PathBuf {
 
 #[test]
 fn nothing() {
-    TempDir::new(&format!("tests/test-{}", line!()));
+    TempDir::new(&format!("tests/testdir-{}", line!()));
 }
 
 #[test]
-fn read_empty() {
-    let t = TempDir::new(&format!("tests/test-{}", line!()));
+fn read_empty_directory() {
+    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
     for entry in std::fs::read_dir(t.path("mnt")).unwrap() {
         let entry = entry.unwrap();
         let path = entry.path();
         println!("entry: {:?}", &path);
         assert!(false);
+    }
+}
+
+#[test]
+fn file_write_read() {
+    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
+    let contents = b"hello\n";
+    {
+        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+        f.write(contents).unwrap();
+    }
+    {
+        let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+    {
+        println!("verify that the file actually got stored in data");
+        let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
     }
 }
