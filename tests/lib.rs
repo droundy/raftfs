@@ -30,7 +30,7 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         self.1.kill().ok();
-        std::fs::remove_dir_all(&self.0).ok(); // ignore errors that might happen on windows
+        //std::fs::remove_dir_all(&self.0).ok(); // ignore errors that might happen on windows
     }
 }
 
@@ -77,6 +77,42 @@ fn file_write_read() {
     {
         println!("verify that the file actually got stored in data");
         let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+}
+
+#[test]
+fn file_write_read_snapshot() {
+    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
+    let contents = b"hello\n";
+    {
+        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+        f.write(contents).unwrap();
+    }
+    {
+        let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+    println!("creating .snapshots");
+    std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
+    println!("done creating .snapshots/snap");
+    {
+        println!("verify that the file actually got stored in data");
+        let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
+        let mut actual_contents = Vec::new();
+        f.read_to_end(&mut actual_contents).unwrap();
+        assert_eq!(std::str::from_utf8(&actual_contents),
+                   std::str::from_utf8(contents));
+    }
+    {
+        println!("verify that the file can be read from the snapshot.");
+        let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/testfile")).unwrap();
         let mut actual_contents = Vec::new();
         f.read_to_end(&mut actual_contents).unwrap();
         assert_eq!(std::str::from_utf8(&actual_contents),

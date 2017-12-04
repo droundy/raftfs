@@ -87,9 +87,23 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
 
 impl RaftFS {
     fn real_path(&self, partial: &Path) -> OsString {
-        PathBuf::from(&self.target)
-                .join(partial.strip_prefix("/").unwrap())
-                .into_os_string()
+        println!("reading real_path {:?}", partial);
+        let partial = partial.strip_prefix("/").unwrap();
+        if let Ok(child) = partial.strip_prefix(".snapshots") {
+            let mut childstuff = child.iter();
+            if let Some(snapname) = childstuff.next() {
+                let rest = childstuff.as_path();
+                if PathBuf::from(&self.target).join(".snapshots").join(snapname).is_dir() {
+                    // The snapshot exists!
+                    if !PathBuf::from(&self.target).join(partial).exists() {
+                        // It has not been overridden
+                        return PathBuf::from(&self.target).join(rest)
+                            .into_os_string();
+                    }
+                }
+            }
+        }
+        PathBuf::from(&self.target).join(partial).into_os_string()
     }
 
     fn stat_real(&self, path: &Path) -> io::Result<FileAttr> {
