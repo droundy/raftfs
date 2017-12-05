@@ -1,5 +1,6 @@
 use std::io::{Write, Read};
 
+#[derive(Debug)]
 struct TempDir(std::path::PathBuf, std::process::Child);
 impl TempDir {
     fn new<P: AsRef<std::path::Path>> (p: P) -> TempDir {
@@ -30,7 +31,6 @@ impl TempDir {
 impl Drop for TempDir {
     fn drop(&mut self) {
         self.1.kill().ok();
-        //std::fs::remove_dir_all(&self.0).ok(); // ignore errors that might happen on windows
     }
 }
 
@@ -43,111 +43,133 @@ fn location_of_executables() -> std::path::PathBuf {
     path
 }
 
-#[test]
-fn nothing() {
-    TempDir::new(&format!("tests/testdir-{}", line!()));
-}
-
-#[test]
-fn read_empty_directory() {
-    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
-    for entry in std::fs::read_dir(t.path("mnt")).unwrap() {
-        let entry = entry.unwrap();
-        let path = entry.path();
-        println!("entry: {:?}", &path);
-        assert!(false);
+macro_rules! test_case {
+    (fn $testname:ident($t:ident) $body:expr) => {
+        mod $testname {
+            use super::*;
+            #[test]
+            fn $testname() {
+                let path = std::path::PathBuf::from(
+                    format!("tmp/{}", module_path!()));
+                {
+                    let $t = TempDir::new(&path);
+                    $body;
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+                // Remove temporary directoyr, but ignore errors that
+                // might happen on windows.
+                std::fs::remove_dir_all(&path).ok();
+            }
+        }
     }
 }
 
-#[test]
-fn file_write_read() {
-    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
-    let contents = b"hello\n";
-    {
-        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
-        f.write(contents).unwrap();
-    }
-    {
-        let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
-    }
-    {
-        println!("verify that the file actually got stored in data");
-        let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
+test_case!{
+    fn nothing(t) {
+        println!("Testing: {:?}", t);
     }
 }
 
-#[test]
-fn file_write_read_snapshot() {
-    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
-    let contents = b"hello\n";
-    {
-        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
-        f.write(contents).unwrap();
-    }
-    {
-        let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
-    }
-    println!("creating .snapshots");
-    std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
-    println!("done creating .snapshots/snap");
-    {
-        println!("verify that the file actually got stored in data");
-        let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
-    }
-    {
-        println!("verify that the file can be read from the snapshot.");
-        let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/testfile")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
+test_case!{
+    fn read_empty_directory(t) {
+        for entry in std::fs::read_dir(t.path("mnt")).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            println!("entry: {:?}", &path);
+            assert!(false);
+        }
     }
 }
 
-#[test]
-fn file_rename() {
-    let t = TempDir::new(&format!("tests/testdir-{}", line!()));
-    let contents = b"hello\n";
-    {
-        let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
-        f.write(contents).unwrap();
+test_case!{
+    fn file_write_read(t) {
+        let contents = b"hello\n";
+        {
+            let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+            f.write(contents).unwrap();
+        }
+        {
+            let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        {
+            println!("verify that the file actually got stored in data");
+            let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
     }
-    assert!(std::fs::File::open(t.path("mnt/testfile")).is_ok());
-    assert!(std::fs::File::open(t.path("mnt/newname")).is_err());
-    std::fs::rename(t.path("mnt/testfile"), t.path("mnt/newname")).unwrap();
-    assert!(std::fs::File::open(t.path("mnt/testfile")).is_err());
-    assert!(std::fs::File::open(t.path("data/testfile")).is_err());
-    assert!(std::fs::File::open(t.path("mnt/newname")).is_ok());
-    assert!(std::fs::File::open(t.path("data/newname")).is_ok());
-    {
-        let mut f = std::fs::File::open(t.path("mnt/newname")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
+}
+
+test_case!{
+    fn file_write_read_snapshot(t) {
+        let contents = b"hello\n";
+        {
+            let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+            f.write(contents).unwrap();
+        }
+        {
+            let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        println!("creating .snapshots");
+        std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
+        println!("done creating .snapshots/snap");
+        {
+            println!("verify that the file actually got stored in data");
+            let mut f = std::fs::File::open(t.path("data/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        {
+            println!("verify that the file can be read from the snapshot.");
+            let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
     }
-    {
-        println!("verify that the file actually got stored in data");
-        let mut f = std::fs::File::open(t.path("data/newname")).unwrap();
-        let mut actual_contents = Vec::new();
-        f.read_to_end(&mut actual_contents).unwrap();
-        assert_eq!(std::str::from_utf8(&actual_contents),
-                   std::str::from_utf8(contents));
+}
+
+test_case!{
+    fn file_rename(t) {
+        let contents = b"hello\n";
+        {
+            let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+            f.write(contents).unwrap();
+        }
+        assert!(std::fs::File::open(t.path("mnt/testfile")).is_ok());
+        assert!(std::fs::File::open(t.path("mnt/newname")).is_err());
+        std::fs::rename(t.path("mnt/testfile"), t.path("mnt/newname")).unwrap();
+        assert!(std::fs::File::open(t.path("mnt/testfile")).is_err());
+        assert!(std::fs::File::open(t.path("data/testfile")).is_err());
+        assert!(std::fs::File::open(t.path("mnt/newname")).is_ok());
+        assert!(std::fs::File::open(t.path("data/newname")).is_ok());
+        {
+            let mut f = std::fs::File::open(t.path("mnt/newname")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        {
+            println!("verify that the file actually got stored in data");
+            let mut f = std::fs::File::open(t.path("data/newname")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
     }
 }
