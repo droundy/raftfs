@@ -44,7 +44,7 @@ fn location_of_executables() -> std::path::PathBuf {
 }
 
 macro_rules! test_case {
-    (fn $testname:ident($t:ident) $body:expr) => {
+    (fn $testname:ident($t:ident) $body:block) => {
         mod $testname {
             use super::*;
             #[test]
@@ -56,8 +56,8 @@ macro_rules! test_case {
                     $body;
                 }
                 std::thread::sleep(std::time::Duration::from_secs(1));
-                // Remove temporary directoyr, but ignore errors that
-                // might happen on windows.
+                // Remove temporary directory (we did not panic!), but
+                // ignore errors that might happen on windows.
                 std::fs::remove_dir_all(&path).ok();
             }
         }
