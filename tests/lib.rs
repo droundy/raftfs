@@ -317,3 +317,16 @@ test_case!{
         }
     }
 }
+
+test_case!{
+    fn file_directory_in_snapshot(t) {
+        std::fs::create_dir(t.path("mnt/testdir")).unwrap();
+        assert!(t.path("mnt/testdir").is_dir());
+
+        println!("creating .snapshots");
+        std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
+        println!("done creating .snapshots/snap");
+
+        assert!(t.path("mnt/.snapshots/snap/testdir").is_dir());
+    }
+}
