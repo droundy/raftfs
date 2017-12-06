@@ -5,6 +5,7 @@
 // Copyright (c) 2016-2017 by William R. Fraser
 //
 
+use std;
 use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{self, Read, Write, Seek, SeekFrom};
@@ -86,6 +87,53 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
 }
 
 impl RaftFS {
+    fn backup_snapshot(&self, partial: &Path) -> Result<(), std::io::Error> {
+        let partial = partial.strip_prefix("/").unwrap();
+        println!("backup_snapshot for {:?}", partial);
+        let from = PathBuf::from(&self.target).join(partial);
+        for e in std::fs::read_dir(PathBuf::from(&self.target).join(".snapshots"))? {
+            let snappath = e?.path();
+            println!("backup_snapshot: {:?}", snappath);
+            std::fs::copy(&from, snappath.join(partial))?;
+        }
+        Ok(())
+    }
+    fn whiteout_snapshot(&self, partial: &Path) -> Result<(), std::io::Error> {
+        let partial = partial.strip_prefix("/").unwrap();
+        println!("whiteout_snapshot for {:?}", partial);
+        for e in std::fs::read_dir(PathBuf::from(&self.target).join(".snapshots"))? {
+            let snappath = e?.path();
+            let real = snappath.join(partial);
+            println!("whiteout_snapshot: {:?}", real);
+            // whiteout is a socket
+            let result = unsafe {
+                let path_c = CString::from_vec_unchecked(real.as_os_str().as_bytes().to_vec());
+                libc::mknod(path_c.as_ptr(), libc::S_IFSOCK, 0)
+            };
+
+            if -1 == result {
+                let e = io::Error::last_os_error();
+                error!("whiteout mknod error({:?}, S_IFCHR, 0): {}", real, e);
+                return Err(e)
+            }
+        }
+        Ok(())
+    }
+    fn is_in_snapshot(&self, partial: &Path) -> bool {
+        if let Ok(child) = partial.strip_prefix("/.snapshots") {
+            let mut childstuff = child.iter();
+            if let Some(_) = childstuff.next() {
+                return childstuff.next().is_some();
+            }
+        }
+        false
+    }
+    fn is_snapshot(&self, partial: &Path) -> bool {
+        if let Ok(child) = partial.strip_prefix("/.snapshots") {
+            return child.iter().next().is_some();
+        }
+        false
+    }
     fn real_path(&self, partial: &Path) -> OsString {
         println!("reading real_path {:?}", partial);
         let partial = partial.strip_prefix("/").unwrap();
@@ -94,15 +142,43 @@ impl RaftFS {
             if let Some(snapname) = childstuff.next() {
                 let rest = childstuff.as_path();
                 if PathBuf::from(&self.target).join(".snapshots").join(snapname).is_dir() {
-                    // The snapshot exists!
-                    if !PathBuf::from(&self.target).join(partial).exists() {
-                        // It has not been overridden
+                    // The snapshot exists! Now check if the path has
+                    // a snapshot value or whiteout.
+                    match libc_wrappers::lstat(PathBuf::from(&self.target).join(partial).into_os_string()) {
+                        Ok(stat) => {
+                            let typ = mode_to_filetype(stat.st_mode);
+                            if typ == FileType::Socket {
+                                return OsString::from("this is an invalid whiteout path");
+                            }
+                            if typ == FileType::Directory {
+                                // It is not a file that has been
+                                // overridden.  Directories are joined
+                                // between the snapshot and the
+                                // "real" directory.
+                                return PathBuf::from(&self.target).join(rest)
+                                    .into_os_string();
+                            }
+                        },
+                        Err(_) => {
+                            // It is not a file that has been overridden
+                            return PathBuf::from(&self.target).join(rest)
+                                .into_os_string();
+                        }
+                    }
+
+                    if !PathBuf::from(&self.target).join(partial).is_file() {
+                        // It is not a file that has been overridden
                         return PathBuf::from(&self.target).join(rest)
                             .into_os_string();
                     }
                 }
             }
         }
+        PathBuf::from(&self.target).join(partial).into_os_string()
+    }
+    fn snap_path(&self, partial: &Path) -> OsString {
+        println!("reading snap_path {:?}", partial);
+        let partial = partial.strip_prefix("/").unwrap();
         PathBuf::from(&self.target).join(partial).into_os_string()
     }
 
@@ -153,10 +229,23 @@ impl FilesystemMT for RaftFS {
 
     fn opendir(&self, _req: RequestInfo, path: &Path, _flags: u32) -> ResultOpen {
         let real = self.real_path(path);
-        debug!("opendir: {:?} (flags = {:#o})", real, _flags);
+        let is_snap = self.is_snapshot(path);
+        debug!("opendir: {:?} (flags = {:#o}) {:?} IS_SNAP = {}",
+               real, _flags, path, is_snap);
         match libc_wrappers::opendir(real) {
-            Ok(fh) => Ok((fh, 0)),
+            Ok(fh) => if is_snap {
+                Ok((fh | 1<<63, 0)) // large invalid file descriptor means snapshot!
+            } else {
+                Ok((fh, 0))
+            },
             Err(e) => {
+                if is_snap {
+                    // If the "real" directory is unreadable, just
+                    // read the snapshot version of the directory.
+                    if let Ok(fh) = libc_wrappers::opendir(self.snap_path(path)) {
+                        return Ok((fh,0));
+                    }
+                }
                 let ioerr = io::Error::from_raw_os_error(e);
                 error!("opendir({:?}): {}", path, ioerr);
                 Err(e)
@@ -169,10 +258,12 @@ impl FilesystemMT for RaftFS {
         libc_wrappers::closedir(fh)
     }
 
-    fn readdir(&self, _req: RequestInfo, path: &Path, fh: u64) -> ResultReaddir {
+    fn readdir(&self, _req: RequestInfo, path: &Path, infh: u64) -> ResultReaddir {
         debug!("readdir: {:?}", path);
         let mut entries: Vec<DirectoryEntry> = vec![];
 
+        let fh = infh & (! (1 << 63));
+        let is_snap = (infh & (1 << 63)) != 0;
         if fh == 0 {
             error!("readdir: missing fh");
             return Err(libc::EINVAL);
@@ -184,7 +275,7 @@ impl FilesystemMT for RaftFS {
                     let name_c = unsafe { CStr::from_ptr(entry.d_name.as_ptr()) };
                     let name = OsStr::from_bytes(name_c.to_bytes()).to_owned();
 
-                    let filetype = match entry.d_type {
+                    let mut filetype = match entry.d_type {
                         libc::DT_DIR => FileType::Directory,
                         libc::DT_REG => FileType::RegularFile,
                         libc::DT_LNK => FileType::Symlink,
@@ -209,6 +300,23 @@ impl FilesystemMT for RaftFS {
                         }
                     };
 
+                    if is_snap {
+                        if name == OsStr::new(".snapshots") {
+                            continue; // ignore any .snapshots in a snapshot
+                        }
+                        // Need to look for version of file in the
+                        // snapshots directory now...
+                        let entry_path = PathBuf::from(path).join(&name);
+                        let real_path = self.real_path(&entry_path);
+                        if let Ok(stat64) = libc_wrappers::lstat(real_path) {
+                            // filetype of snap version should
+                            // override the other
+                            if stat64.st_mode == libc::S_IFSOCK {
+                                continue; // treat as whiteout
+                            }
+                            filetype = mode_to_filetype(stat64.st_mode);
+                        }
+                    }
                     entries.push(DirectoryEntry {
                         name: name,
                         kind: filetype,
@@ -550,8 +658,16 @@ impl FilesystemMT for RaftFS {
         }
     }
 
-    fn rename(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, newparent_path: &Path, newname: &OsStr) -> ResultEmpty {
-        debug!("rename: {:?}/{:?} -> {:?}/{:?}", parent_path, name, newparent_path, newname);
+    fn rename(&self, _req: RequestInfo,
+              parent_path: &Path, name: &OsStr,
+              newparent_path: &Path, newname: &OsStr) -> ResultEmpty {
+        debug!("rename: {:?}/{:?} -> {:?}/{:?}",
+               parent_path, name, newparent_path, newname);
+        if self.is_snapshot(parent_path) || self.is_snapshot(newparent_path) {
+            return Err(libc::EROFS);
+        }
+        self.backup_snapshot(&parent_path.join(name));
+        self.whiteout_snapshot(&newparent_path.join(newname));
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         let newreal = PathBuf::from(self.real_path(newparent_path)).join(newname);
