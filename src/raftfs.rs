@@ -87,6 +87,15 @@ fn statfs_to_fuse(statfs: libc::statfs) -> Statfs {
 }
 
 impl RaftFS {
+    fn mustnt_exist(&self, partial: &Path) -> Result<(), i32> {
+        let partial = partial.strip_prefix("/").unwrap();
+        println!("backup_snapshot for {:?}", partial);
+        let path = PathBuf::from(&self.target).join(partial);
+        if path.symlink_metadata().is_ok() {
+            return Err(libc::EROFS);
+        }
+        Ok(())
+    }
     fn backup_snapshot(&self, partial: &Path) -> Result<(), std::io::Error> {
         let partial = partial.strip_prefix("/").unwrap();
         println!("backup_snapshot for {:?}", partial);
@@ -573,6 +582,13 @@ impl FilesystemMT for RaftFS {
     fn mknod(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, mode: u32, rdev: u32) -> ResultEntry {
         debug!("mknod: {:?}/{:?} (mode={:#o}, rdev={})", parent_path, name, mode, rdev);
 
+        let parent_path_name = parent_path.join(name);
+        self.mustnt_exist(&parent_path_name)?;
+        if self.is_snapshot(parent_path) {
+            return Err(libc::EROFS);
+        }
+        self.whiteout_snapshot(&parent_path_name);
+
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         let result = unsafe {
             let path_c = CString::from_vec_unchecked(real.as_os_str().as_bytes().to_vec());
@@ -594,10 +610,12 @@ impl FilesystemMT for RaftFS {
     fn mkdir(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, mode: u32) -> ResultEntry {
         debug!("mkdir {:?}/{:?} (mode={:#o})", parent_path, name, mode);
 
+        let parent_path_name = parent_path.join(name);
+        self.mustnt_exist(&parent_path_name)?;
         if self.is_snapshot(parent_path) {
             return Err(libc::EROFS);
         }
-        self.whiteout_snapshot(&parent_path.join(name));
+        self.whiteout_snapshot(&parent_path_name);
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         let result = unsafe {
