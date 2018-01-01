@@ -594,6 +594,11 @@ impl FilesystemMT for RaftFS {
     fn mkdir(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, mode: u32) -> ResultEntry {
         debug!("mkdir {:?}/{:?} (mode={:#o})", parent_path, name, mode);
 
+        if self.is_snapshot(parent_path) {
+            return Err(libc::EROFS);
+        }
+        self.whiteout_snapshot(&parent_path.join(name));
+
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         let result = unsafe {
             let path_c = CString::from_vec_unchecked(real.as_os_str().as_bytes().to_vec());
