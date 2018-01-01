@@ -96,14 +96,29 @@ impl RaftFS {
         }
         Ok(())
     }
+    fn copy_for_backup(&self, from: &Path, to: &Path) -> Result<(), std::io::Error> {
+        if !to.exists() {
+            if let Some(par) = to.parent() {
+                if !par.exists() {
+                    self.copy_for_backup(from.parent().unwrap(), &par)?;
+                }
+            }
+            if from.is_file() {
+                std::fs::copy(from, to)?;
+            } else {
+                std::fs::create_dir(to)?;
+            }
+        }
+        Ok(())
+    }
     fn backup_snapshot(&self, partial: &Path) -> Result<(), std::io::Error> {
         let partial = partial.strip_prefix("/").unwrap();
         println!("backup_snapshot for {:?}", partial);
         let from = PathBuf::from(&self.target).join(partial);
         for e in std::fs::read_dir(PathBuf::from(&self.target).join(".snapshots"))? {
             let snappath = e?.path();
-            println!("backup_snapshot: {:?}", snappath);
-            std::fs::copy(&from, snappath.join(partial))?;
+            println!("backup_snapshot: {:?} for {:?}", snappath, partial);
+            self.copy_for_backup(&from, &snappath.join(partial))?;
         }
         Ok(())
     }
@@ -164,12 +179,15 @@ impl RaftFS {
                                 // overridden.  Directories are joined
                                 // between the snapshot and the
                                 // "real" directory.
+                                println!("case 1 not overridden");
                                 return PathBuf::from(&self.target).join(rest)
                                     .into_os_string();
                             }
                         },
                         Err(_) => {
                             // It is not a file that has been overridden
+                            println!("case 2 not overridden {:?}",
+                                     PathBuf::from(&self.target).join(partial));
                             return PathBuf::from(&self.target).join(rest)
                                 .into_os_string();
                         }
@@ -177,6 +195,7 @@ impl RaftFS {
 
                     if !PathBuf::from(&self.target).join(partial).is_file() {
                         // It is not a file that has been overridden
+                        println!("case 3 not overridden");
                         return PathBuf::from(&self.target).join(rest)
                             .into_os_string();
                     }
@@ -349,7 +368,8 @@ impl FilesystemMT for RaftFS {
         match libc_wrappers::open(real, flags as libc::c_int) {
             Ok(fh) => Ok((fh, flags)),
             Err(e) => {
-                error!("open({:?}): {}", path, io::Error::from_raw_os_error(e));
+                error!("open({:?}) [... was {:?}]: {}", path, self.real_path(path),
+                       io::Error::from_raw_os_error(e));
                 Err(e)
             }
         }
@@ -641,6 +661,12 @@ impl FilesystemMT for RaftFS {
     fn unlink(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr) -> ResultEmpty {
         debug!("unlink {:?}/{:?}", parent_path, name);
 
+        if self.is_snapshot(parent_path) {
+            return Err(libc::EROFS);
+        }
+        let parent_path_name = parent_path.join(name);
+        self.backup_snapshot(&parent_path_name);
+
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         fs::remove_file(&real)
             .map_err(|ioerr| {
@@ -652,6 +678,10 @@ impl FilesystemMT for RaftFS {
     fn rmdir(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr) -> ResultEmpty {
         debug!("rmdir: {:?}/{:?}", parent_path, name);
 
+        if self.is_snapshot(parent_path) {
+            return Err(libc::EROFS);
+        }
+
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         fs::remove_dir(&real)
             .map_err(|ioerr| {
@@ -662,6 +692,10 @@ impl FilesystemMT for RaftFS {
 
     fn symlink(&self, _req: RequestInfo, parent_path: &Path, name: &OsStr, target: &Path) -> ResultEntry {
         debug!("symlink: {:?}/{:?} -> {:?}", parent_path, name, target);
+
+        if self.is_snapshot(parent_path) {
+            return Err(libc::EROFS);
+        }
 
         let real = PathBuf::from(self.real_path(parent_path)).join(name);
         match ::std::os::unix::fs::symlink(target, &real) {
@@ -704,6 +738,10 @@ impl FilesystemMT for RaftFS {
     fn link(&self, _req: RequestInfo, path: &Path, newparent: &Path, newname: &OsStr) -> ResultEntry {
         debug!("link: {:?} -> {:?}/{:?}", path, newparent, newname);
 
+        if self.is_snapshot(newparent) {
+            return Err(libc::EROFS);
+        }
+
         let real = self.real_path(path);
         let newreal = PathBuf::from(self.real_path(newparent)).join(newname);
         match fs::hard_link(&real, &newreal) {
@@ -725,6 +763,10 @@ impl FilesystemMT for RaftFS {
 
     fn create(&self, _req: RequestInfo, parent: &Path, name: &OsStr, mode: u32, flags: u32) -> ResultCreate {
         debug!("create: {:?}/{:?} (mode={:#o}, flags={:#x})", parent, name, mode, flags);
+
+        if self.is_snapshot(parent) {
+            return Err(libc::EROFS);
+        }
 
         let real = PathBuf::from(self.real_path(parent)).join(name);
         let fd = unsafe {
@@ -788,12 +830,20 @@ impl FilesystemMT for RaftFS {
 
     fn setxattr(&self, _req: RequestInfo, path: &Path, name: &OsStr, value: &[u8], flags: u32, position: u32) -> ResultEmpty {
         debug!("setxattr: {:?} {:?} {} bytes, flags = {:#x}, pos = {}", path, name, value.len(), flags, position);
+        if self.is_snapshot(path) {
+            return Err(libc::EROFS);
+        }
         let real = self.real_path(path);
         libc_wrappers::lsetxattr(real, name.to_owned(), value, flags, position)
     }
 
     fn removexattr(&self, _req: RequestInfo, path: &Path, name: &OsStr) -> ResultEmpty {
         debug!("removexattr: {:?} {:?}", path, name);
+
+        if self.is_snapshot(path) {
+            return Err(libc::EROFS);
+        }
+
         let real = self.real_path(path);
         libc_wrappers::lremovexattr(real, name.to_owned())
     }

@@ -332,7 +332,7 @@ test_case!{
 }
 
 test_case!{
-    fn file_rmdir_in_snapshot(t) {
+    fn rmdir_in_snapshot(t) {
         std::fs::create_dir(t.path("mnt/testdir")).unwrap();
         assert!(t.path("mnt/testdir").is_dir());
 
@@ -376,7 +376,7 @@ test_case!{
 }
 
 test_case!{
-    fn file_mkdir_in_snapshot(t) {
+    fn mkdir_in_snapshot(t) {
         std::fs::create_dir_all(t.path("mnt/subdir")).unwrap();
         println!("creating .snapshots");
         std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
@@ -389,3 +389,94 @@ test_case!{
         assert!(std::fs::create_dir(t.path("mnt/.snapshots/snap/subdir/testdir")).is_err());
     }
 }
+
+test_case!{
+    fn unlink_after_snapshot(t) {
+        let contents = b"hello\n";
+        {
+            let mut f = std::fs::File::create(t.path("mnt/testfile")).unwrap();
+            f.write(contents).unwrap();
+        }
+        std::fs::create_dir_all(t.path("mnt/subdir")).unwrap();
+        {
+            let mut f = std::fs::File::create(t.path("mnt/subdir/testfile")).unwrap();
+            f.write(contents).unwrap();
+        }
+        println!("creating .snapshots");
+        std::fs::create_dir_all(t.path("mnt/.snapshots/snap")).unwrap();
+        println!("done creating .snapshots/snap");
+        {
+            println!("verify that the file is in snapshot");
+            let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        {
+            println!("verify that the file is present");
+            let mut f = std::fs::File::open(t.path("mnt/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+
+        assert!(t.path("mnt/subdir").is_dir());
+        assert!(t.path("mnt/subdir/testfile").is_file());
+        assert!(t.path("mnt/.snapshots/snap/subdir").is_dir());
+        assert!(std::fs::remove_file(t.path("mnt/.snapshots/snap/testfile")).is_err());
+        std::fs::remove_file(t.path("mnt/testfile")).unwrap();
+        assert!(!t.path("mnt/testfiler").exists());
+        assert!(t.path("mnt/.snapshots/snap/testfile").exists());
+        {
+            println!("verify that the file is correct in snapshot");
+            let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+        {
+            println!("verify that the subdir file is correct in snapshot");
+            let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/subdir/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+
+        assert!(t.path("data/subdir").is_dir());
+        assert!(t.path("data/subdir/testfile").is_file());
+        assert!(!t.path("data/.snapshots/snap/subdir/testfile").is_file());
+        assert!(t.path("mnt/subdir").is_dir());
+        assert!(t.path("mnt/subdir/testfile").is_file());
+
+        //std::fs::remove_dir_all(t.path("mnt/.snapshots/snap/subdir")).is_err();
+        assert!(t.path("data/subdir").is_dir());
+        assert!(t.path("data/subdir/testfile").is_file());
+        assert!(!t.path("data/.snapshots/snap/subdir/testfile").is_file());
+        assert!(t.path("mnt/subdir").is_dir());
+        assert!(t.path("mnt/subdir/testfile").is_file());
+        println!("remove file from subdir");
+        //std::fs::remove_file(t.path("mnt/subdir/testfile")).unwrap();
+        std::fs::remove_dir_all(t.path("mnt/subdir")).unwrap();
+        assert!(!t.path("mnt/subdir").is_dir());
+        assert!(!t.path("mnt/subdir/testfile").is_file());
+        assert!(t.path("mnt/.snapshots/snap/subdir").is_dir());
+        assert!(t.path("mnt/.snapshots/snap/subdir/testfile").is_file());
+
+        println!("we should have written subdir to the snap directory");
+        assert!(t.path("data/.snapshots/snap/subdir").is_dir());
+        assert!(t.path("data/.snapshots/snap/subdir/testfile").is_file());
+        {
+            println!("verify that the subdir file is still correct in snapshot");
+            let mut f = std::fs::File::open(t.path("mnt/.snapshots/snap/subdir/testfile")).unwrap();
+            let mut actual_contents = Vec::new();
+            f.read_to_end(&mut actual_contents).unwrap();
+            assert_eq!(std::str::from_utf8(&actual_contents),
+                       std::str::from_utf8(contents));
+        }
+    }
+}
+
